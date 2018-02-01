@@ -172,6 +172,13 @@ $stats{connects} = 0;
 $stats{errors}   = 0;
 $stats{threads}  = 0;
 
+# stats per thread
+my (%log, @elapsed);
+$log{bytes}    = 0;
+$log{connects} = 0;
+$log{errors}   = 0;
+$log{threads}  = 0;
+
 # prepare params
 my %sock = (
             PeerAddr        => "[$ip]:$port",
@@ -262,7 +269,7 @@ sub setup {
   # from here on, we're inside a new thread
   my($socket, $times, $delay, $debug, @uris) = @_;
 
-  $SIG{'KILL'} = sub { threads->exit(); };
+  $SIG{'KILL'} = sub { sync(); threads->exit(); };
 
   if ($times) {
     foreach (1 .. $times) {
@@ -274,10 +281,20 @@ sub setup {
       fetch($socket, $delay, $debug, @uris);
     }
   }
+  sync();
 
   threads->detach();
-
   return 1;
+}
+
+sub sync {
+  #
+  # synchronize thread local stats to shared stats
+  $stats{bytes}    += $log{bytes};
+  $stats{connects} += $log{connects};
+  $stats{errors}   += $log{errors};
+  $stats{threads}  += $log{threads};
+  push @times, @elapsed;
 }
 
 sub fetch {
@@ -296,7 +313,6 @@ sub fetch {
       my $met = $urlentry->{method};
       my $dat = $urlentry->{data} || '';
 
-      verbose("trying $met $uri <$dat>");
       $client->write_request($met => $uri, %head, $dat);
       my($code, $mess, %h) = $client->read_response_headers;
 
@@ -315,14 +331,14 @@ sub fetch {
       }
 
       my $elapsed = tv_interval($start, [gettimeofday]);
-      push @times, $elapsed;
-      $stats{bytes} += $len;
+      push @elapsed, $elapsed;
+      $log{bytes} += $len;
 
       if ($code == 200) {
-        $stats{connects}++;
+        $log{connects}++;
       }
       else {
-        $stats{errors}++;
+        $log{errors}++;
       }
 
       verbose("got HTTP $code with $mess and $len bytes "
@@ -331,11 +347,14 @@ sub fetch {
   };
 
   if ($@) {
-    $stats{errors}++;
-    verbose("failed with $@");
+    $log{errors}++;
+    chomp $@;
+    verbose("Failure: $@");
   }
 
   waiting($delay);
+
+  return %stats;
 }
 
 sub verbose {
@@ -364,7 +383,7 @@ sub waiting {
 }
 
 sub usage {
-  my $err = shift;
+  my $err = shift || '';
   print STDERR qq($err
 Usage $0 [-hpPcdfhv]
 Options:
@@ -385,6 +404,7 @@ Options:
                          be mixed with --repeats, supported
                          abbrevs: m (minutes), h (hours), e.g.
                          --limit 10m or --limit 2h
+--clients   -c <count>   How many concurrent threads to use
 --useragent -u <str>     Set UserAgent to <str> (default $ua)
 --bindaddr  -b <addr>    IPv6 address to use as source
 --header       <header>  Add <header> to requests (multiple ok)
