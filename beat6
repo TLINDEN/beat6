@@ -1,0 +1,399 @@
+#!/usr/bin/perl
+
+package Beat6;
+use threads;
+use threads::shared;
+
+use Data::Dumper;
+use Net::HTTPS;
+use Net::DNS;
+use IO::Socket::SSL;
+use IO::Socket::INET6;
+use Socket6 qw(inet_pton);
+use Getopt::Long;
+use Time::HiRes qw(sleep gettimeofday tv_interval);
+use Number::Bytes::Human qw(format_bytes parse_bytes);
+
+# to install:
+#
+# wget -O - https://install.perlbrew.pl | bash
+# perlbrew install --thread -n perl-5.22.4
+# perlbrew install-cpanm
+# perlbrew use perl-5.22.4
+# for M in Number::Bytes::Human IO::Socket::INET6 IO::Socket::SSL Net::HTTPS; do cpanm $M; done
+
+use strict;
+use warnings;
+
+my ($host, $port, $path, $clients, $delay, $file, $help,
+    $debug, $times, $version, @uris, $ua, $bind, $timeout,
+    $cout, @headers, $ip, $duration
+);
+
+{
+  $version  = 1.00;
+  $port     = 443;
+  $delay    = 0;
+  $clients  = 1;
+  $times    = 0;
+  $duration = 0;
+  $path     = '/';
+  $ua       = "Beat6/$version";
+  $timeout  = 1;
+}
+
+# mise èn place
+Getopt::Long::Configure( qw(no_ignore_case));
+if (! GetOptions (
+                  "host|H=s"      => \$host,
+                  "path|p=s"      => \$path,
+                  "port|P=s"      => \$port,
+                  "clients|c=s"   => \$clients,
+                  "delay|d=s"     => \$delay,
+                  "urlfile|f=s"   => \$file,
+                  "repeats|r=s"   => \$times,
+                  "limit|l=s"     => \$duration,
+                  "useragent|u=s" => \$ua,
+                  "bindaddr|b=s"  => \$bind,
+                  "header=s"      => \@headers,
+                  "timeout|t=s"   => \$timeout,
+                  "verbose|v"     => \$debug,
+                  "debug"         => \$cout,
+                  "help|h"        => \$help,
+                 )) {
+  usage();
+}
+
+if(!$host) {
+  usage("Parameter --host required!");
+}
+else {
+  if ( inet_pton(AF_INET6, $host) ) {
+    $ip = $host;
+  }
+  else {
+    my $res   = Net::DNS::Resolver->new;
+    my $reply = $res->search($host, "AAAA");
+    if ($reply) {
+      $ip = ($reply->answer)[0]->address;
+    }
+    else {
+      die "Failed to resolve $host AAAA record: ", $res->errorstring, "\n";
+    }
+  }
+}
+
+# delay checks, turn into arrayref
+if ($delay) {
+  if ($delay =~ /^([\d\.]+)\-([\d\.]+)$/) {
+    $delay = [$1, $2];
+  }
+  elsif ($delay =~ /^[\d\.]+$/) {
+    $delay = [$1];
+  }
+  else {
+    usage("Invalid --delay value <$delay>!");
+  }
+}
+
+# limits checks
+if ($duration && $times) {
+  usage("Use either --limit OR --repeats, not both!")
+}
+elsif ($times) {
+  if ($times !~ /^\d+$/) {
+    usage("Invalid --repeats value <$times>");
+  }
+}
+elsif ($duration) {
+  if ($duration =~ /^(\d+)(s|m|h)?$/) {
+    my $timet  = $1;
+    my $abbrev = $2 || '';
+    if ($abbrev eq 'm') {
+      $duration = $timet * 60;
+    }
+    elsif ($abbrev eq 'h') {
+      $duration = $timet * 3600;
+    }
+    else {
+      $duration = $timet;
+    }
+
+    # turn it into stop time to avoid constant time
+    # calculations during run
+    $duration += time;
+  }
+  else {
+    usage("Invalid --limit value <$duration>");
+  }
+}
+else {
+  # no limit set, use defaults
+  $times    = 1;
+  $duration = 0;
+}
+
+if ($help) {
+  usage();
+}
+
+
+
+# main
+if ($file) {
+  open F, "<$file" or die "Could not open file $file: $!\n";
+  while (<F>) {
+    chomp;
+    next if /^\s*#/;
+    next if /^\s*$/;
+    if (/^(PUT|GET|POST)\s\s*(\/.*)/) {
+      my ($uri, $data) = split /\s\s*/, $2;
+      my $R = $1;
+      push @uris, {method => $R, uri => $uri, data => $data};
+    }
+    elsif (/^\//) {
+      push @uris, {method => 'GET', uri => $_};
+    }
+    else {
+      usage("Error: uri file $file contains syntax errors in line $.!");
+    }
+  }
+  close F;
+}
+else {
+  @uris = ({method => 'GET', uri => $path});
+}
+
+# we collect stats from our threads
+my %stats :shared;
+my @times :shared;
+$stats{bytes}    = 0;
+$stats{connects} = 0;
+$stats{errors}   = 0;
+$stats{threads}  = 0;
+
+# prepare params
+my %sock = (
+            PeerAddr        => "[$ip]:$port",
+            Host            => $host,
+            KeepAlive       => 0,
+            SSL_verify_mode => SSL_VERIFY_NONE,
+            Domain          => AF_INET6,
+            Timeout         => $timeout,
+            egal => {}
+           );
+if ($bind) {
+  $sock{LocalAddr} = $bind;
+}
+
+my %head = ('User-Agent' => $ua);
+foreach my $entry (@headers) {
+  my ($h, $v) = split /\s\s*/, $entry;
+  $h =~ s/:$//;
+  $head{$h} = $v;
+}
+
+
+# we want to see stats on C-c as well
+$SIG{INT}  = \&aborted;
+
+# fire and fury
+my $scriptstart = [gettimeofday];
+foreach (1 .. $clients) {
+  my $tr = threads->create(\&setup,
+                           \%sock, $times,
+                           $delay, $debug, @uris);
+  $stats{threads}++;
+}
+
+
+# stay here as long threads are running
+while (scalar threads->list()) {
+  sleep 1;
+}
+
+# done, print stats
+showstats();
+
+
+
+1;
+
+
+sub aborted {
+  foreach my $t (threads->list()) {
+    $t->kill('KILL')->detach();
+  }
+  showstats();
+  exit;
+}
+
+
+sub showstats {
+  my $duration = tv_interval($scriptstart, [gettimeofday]);
+  my $rate     = format_bytes(int($stats{bytes}/$duration) * 8);
+  my $runs     = scalar @times;
+  my $avg      = $runs ? $duration / $runs : 0;
+  my $xfer     = format_bytes( $stats{bytes});
+
+  $xfer =~ s/^([\d\.]*)/$1 . ' '/ge;
+  $rate =~ s/^([\d\.]*)/$1 . ' '/ge;
+
+print qq(Stats for beat6 to https://$host:$port via ipv6:
+      Threads: $stats{threads}
+         Hits: $stats{connects}
+       Errors: $stats{errors}
+  Transferred: ${xfer}b
+Avg xfer rate: $avg s
+ Time elapsed: $duration s
+         Rate: ${rate}bits/s
+);
+}
+
+
+
+
+
+
+
+
+sub setup {
+  #
+  # from here on, we're inside a new thread
+  my($socket, $times, $delay, $debug, @uris) = @_;
+
+  $SIG{'KILL'} = sub { threads->exit(); };
+
+  if ($times) {
+    foreach (1 .. $times) {
+      fetch($socket, $delay, $debug, @uris);
+    }
+  }
+  else {
+    while (time() < $duration) {
+      fetch($socket, $delay, $debug, @uris);
+    }
+  }
+
+  threads->detach();
+
+  return 1;
+}
+
+sub fetch {
+  #
+  # do the actual work: connect, fetch uri(s), emit stats, out
+  my($socket, $delay, $debug, @uris) = @_;
+
+  my $start = [gettimeofday];
+
+  eval {
+    my $client = Net::HTTPS->new( %{$socket})
+      or die "Could not open IPv6 SSL socket on host '$host' port $port: $!\n";
+
+    foreach my $urlentry (@uris) {
+      my $uri = $urlentry->{uri};
+      my $met = $urlentry->{method};
+      my $dat = $urlentry->{data} || '';
+
+      verbose("trying $met $uri <$dat>");
+      $client->write_request($met => $uri, %head, $dat);
+      my($code, $mess, %h) = $client->read_response_headers;
+
+      if ($cout) {
+        print Dumper(\%h);
+      }
+
+      my $len = 0;
+      while (1) {
+        my $buf;
+        my $n = $client->read_entity_body($buf, 1024);
+        die "read failed: $!" unless defined $n;
+        last unless $n;
+        $len += $n;
+        print $buf if($cout);
+      }
+
+      my $elapsed = tv_interval($start, [gettimeofday]);
+      push @times, $elapsed;
+      $stats{bytes} += $len;
+
+      if ($code == 200) {
+        $stats{connects}++;
+      }
+      else {
+        $stats{errors}++;
+      }
+
+      verbose("got HTTP $code with $mess and $len bytes "
+              . "from https://$host:$port$uri (elapsed: $elapsed seconds)");
+    }
+  };
+
+  if ($@) {
+    $stats{errors}++;
+    verbose("failed with $@");
+  }
+
+  waiting($delay);
+}
+
+sub verbose {
+  my $msg = shift;
+  if ($debug) {
+    my $id = threads->self->tid;
+    printf STDERR "[%05d] %s\n", $id, $msg;
+  }
+}
+
+sub waiting {
+  #
+  # wait for random time
+  my $delay = shift;
+  if ($delay) {
+    if (scalar @{$delay} == 2) {
+      my $min   = $delay->[0];
+      my $max   = $delay->[1];
+      $delay = $min + rand($max - $min);
+    }
+    else {
+      my $delay = $delay->[0];
+    }
+    sleep $delay;
+  }
+}
+
+sub usage {
+  my $err = shift;
+  print STDERR qq($err
+Usage $0 [-hpPcdfhv]
+Options:
+--host      -h <host>    Hostname (must have an ipv6 dns entry)
+--port      -P <port>    TCP Port (default 443)
+--path      -p <uri>     Uri path on <host> to fetch
+--urlfile   -f <file>    File containing uri path's to fetch,
+                         Format:
+                            # comment
+                            GET /path/to/html
+                            POST /search string=foobar
+                         Post data must be url-encoded
+--delay     -d <delay>   Delay between requests (default 0),
+                         Set to range for random delays
+--repeats   -r <count>   How many <count> times shall we connect
+                         (default 1, 0 = endless)
+--limit     -l <seconds> How many <seconds> shall we run, cannot
+                         be mixed with --repeats, supported
+                         abbrevs: m (minutes), h (hours), e.g.
+                         --limit 10m or --limit 2h
+--useragent -u <str>     Set UserAgent to <str> (default $ua)
+--bindaddr  -b <addr>    IPv6 address to use as source
+--header       <header>  Add <header> to requests (multiple ok)
+--timeout   -t <seconds> Set timeout to <seconds> (per session)
+--verbose   -v           Verbose output
+--help      -h -?        Help message
+
+This is $0 verion $version, released under the terms of the GPLv3.
+Author: Thomas von Dein <tlinden\@cpan.org>, Released: 2018.
+);
+  exit 1;
+}
