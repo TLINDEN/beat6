@@ -33,7 +33,7 @@ Then execute beat6 with:
 
 ### usage
 
-    Usage beat6 [-hpPfdrlcubtv] [<host>]
+    Usage beat6 [-HpPfdrlcubtvh] [<host>]
     Options:
     --host      -H <host>    Hostname (must have an ipv6 dns entry)
     --port      -P <port>    TCP Port (default 443)
