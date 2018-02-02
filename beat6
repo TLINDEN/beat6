@@ -211,6 +211,7 @@ my $scriptstart = [gettimeofday];
 
 # no threads if 1
 if ($clients == 1) {
+  $stats{threads}++;
   setup(  \%sock, $times, $delay, $debug, @uris);
 }
 else {
@@ -247,6 +248,7 @@ sub aborted {
 sub showstats {
   my $duration = tv_interval($scriptstart, [gettimeofday]);
   my $rate     = format_bytes(int($stats{bytes}/$duration) * 8);
+  my $erate    = ($stats{connects} / 100) * $stats{errors};
   my $runs     = scalar @times;
   my $avg      = $runs ? $duration / $runs : 0;
   my $xfer     = format_bytes( $stats{bytes});
@@ -254,15 +256,18 @@ sub showstats {
   $xfer =~ s/^([\d\.]*)/$1 . ' '/ge;
   $rate =~ s/^([\d\.]*)/$1 . ' '/ge;
 
-print qq(Stats for beat6 to https://$host:$port [$ip] via ipv6:
+printf qq(Stats for beat6 to https://%s:%s [$ip] via ipv6:
       Threads: $stats{threads}
          Hits: $stats{connects}
        Errors: $stats{errors}
-  Transferred: ${xfer}b
-Avg xfer rate: $avg s
- Time elapsed: $duration s
-         Rate: ${rate}bits/s
-);
+   Error rate: %0.2f %%
+  Transferred: %sb
+ Avg run time: %0.2f sec/conn
+ Time elapsed: %0.2f sec
+    Bandwidth: %sbits/sec
+), $host, $port,
+   $erate, $xfer, $avg, $duration, $rate;
+
 }
 
 
