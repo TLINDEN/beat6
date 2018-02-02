@@ -208,17 +208,23 @@ $SIG{INT}  = \&aborted;
 
 # fire and fury
 my $scriptstart = [gettimeofday];
-foreach (1 .. $clients) {
-  my $tr = threads->create(\&setup,
-                           \%sock, $times,
-                           $delay, $debug, @uris);
-  $stats{threads}++;
+
+# no threads if 1
+if ($clients == 1) {
+  setup(  \%sock, $times, $delay, $debug, @uris);
 }
+else {
+  foreach (1 .. $clients) {
+    my $tr = threads->create(\&setup,
+                             \%sock, $times,
+                             $delay, $debug, @uris);
+    $stats{threads}++;
+  }
 
-
-# stay here as long threads are running
-while (scalar threads->list()) {
-  sleep 1;
+  # stay here as long threads are running
+  while (scalar threads->list()) {
+    sleep 1;
+  }
 }
 
 # done, print stats
@@ -285,7 +291,7 @@ sub setup {
   }
   sync();
 
-  threads->detach();
+  threads->detach() unless($clients == 1);
   return 1;
 }
 
@@ -387,7 +393,7 @@ sub waiting {
 sub usage {
   my $err = shift || '';
   print STDERR qq($err
-Usage $0 [-hpPfdrlcubtv] [<host>]
+Usage $0 [-HpPfdrlcubtvh] [<host>]
 Options:
 --host      -H <host>    Hostname (must have an ipv6 dns entry)
 --port      -P <port>    TCP Port (default 443)
