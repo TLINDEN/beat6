@@ -33,9 +33,9 @@ Then execute beat6 with:
 
 ### usage
 
-    Usage beat6 [-hpPcdfhv]
+    Usage beat6 [-hpPfdrlcubtv] [<host>]
     Options:
-    --host      -h <host>    Hostname (must have an ipv6 dns entry)
+    --host      -H <host>    Hostname (must have an ipv6 dns entry)
     --port      -P <port>    TCP Port (default 443)
     --path      -p <uri>     Uri path on <host> to fetch
     --urlfile   -f <file>    File containing uri path's to fetch,
@@ -52,13 +52,14 @@ Then execute beat6 with:
                              be mixed with --repeats, supported
                              abbrevs: m (minutes), h (hours), e.g.
                              --limit 10m or --limit 2h
+    --clients   -c <count>   How many concurrent threads to use
     --useragent -u <str>     Set UserAgent to <str> (default Beat6/1)
     --bindaddr  -b <addr>    IPv6 address to use as source
     --header       <header>  Add <header> to requests (multiple ok)
     --timeout   -t <seconds> Set timeout to <seconds> (per session)
     --verbose   -v           Verbose output
     --help      -h -?        Help message
-    
+        
     This is beat6 verion 1, released under the terms of the GPLv3.
 
 ### license
