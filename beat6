@@ -6,6 +6,7 @@ use threads::shared;
 
 use Data::Dumper;
 use Net::HTTPS;
+use Net::HTTP;
 use Net::DNS;
 use IO::Socket::SSL;
 use IO::Socket::INET6;
@@ -27,7 +28,7 @@ use warnings;
 
 my ($host, $port, $path, $clients, $delay, $file, $help,
     $debug, $times, $version, @uris, $ua, $bind, $timeout,
-    $cout, @headers, $ip, $duration
+    $cout, @headers, $ip, $duration, $insecure
 );
 
 {
@@ -40,6 +41,7 @@ my ($host, $port, $path, $clients, $delay, $file, $help,
   $path     = '/';
   $ua       = "Beat6/$version";
   $timeout  = 1;
+  $insecure = 0;
 }
 
 # mise èn place
@@ -57,6 +59,7 @@ if (! GetOptions (
                   "bindaddr|b=s"  => \$bind,
                   "header=s"      => \@headers,
                   "timeout|t=s"   => \$timeout,
+                  "insecure|i"    => \$insecure,
                   "verbose|v"     => \$debug,
                   "debug"         => \$cout,
                   "help|h"        => \$help,
@@ -256,7 +259,8 @@ sub showstats {
   $xfer =~ s/^([\d\.]*)/$1 . ' '/ge;
   $rate =~ s/^([\d\.]*)/$1 . ' '/ge;
 
-printf qq(Stats for beat6 to https://%s:%s [$ip] via ipv6:
+  my $proto = $insecure ? 'http' : 'https';
+printf qq(Stats for beat6 to %s://%s:%s [$ip] via ipv6:
       Threads: $stats{threads}
          Hits: $stats{connects}
        Errors: $stats{errors}
@@ -265,7 +269,7 @@ printf qq(Stats for beat6 to https://%s:%s [$ip] via ipv6:
  Avg run time: %0.2f sec/conn
  Time elapsed: %0.2f sec
     Bandwidth: %sbits/sec
-), $host, $port,
+), $proto, $host, $port,
    $erate, $xfer, $avg, $duration, $rate;
 
 }
@@ -315,11 +319,19 @@ sub fetch {
   # do the actual work: connect, fetch uri(s), emit stats, out
   my($socket, $delay, $debug, @uris) = @_;
 
+  my $proto = $insecure ? 'http' : 'https';
   my $start = [gettimeofday];
+  my $client;
 
   eval {
-    my $client = Net::HTTPS->new( %{$socket})
-      or die "Could not open IPv6 SSL socket on host '$host' port $port: $!\n";
+    if ($insecure) {
+      $client = Net::HTTP->new( %{$socket})
+        or die "Could not open IPv6 Web socket on host '$host' port $port: $!\n";
+    }
+    else {
+      $client = Net::HTTPS->new( %{$socket})
+        or die "Could not open IPv6 SSL socket on host '$host' port $port: $!\n";
+    }
 
     foreach my $urlentry (@uris) {
       my $uri = $urlentry->{uri};
@@ -355,7 +367,7 @@ sub fetch {
       }
 
       verbose("got HTTP $code with $mess and $len bytes "
-              . "from https://$host:$port$uri (elapsed: $elapsed seconds)");
+              . "from $proto://$host:$port$uri (elapsed: $elapsed seconds)");
     }
   };
 
@@ -421,6 +433,7 @@ Options:
 --useragent -u <str>     Set UserAgent to <str> (default $ua)
 --bindaddr  -b <addr>    IPv6 address to use as source
 --header       <header>  Add <header> to requests (multiple ok)
+--insecure  -i           Use unencrypted HTTP instead of SSL
 --timeout   -t <seconds> Set timeout to <seconds> (per session)
 --verbose   -v           Verbose output
 --help      -h -?        Help message

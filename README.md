@@ -56,6 +56,7 @@ Then execute beat6 with:
     --useragent -u <str>     Set UserAgent to <str> (default Beat6/1)
     --bindaddr  -b <addr>    IPv6 address to use as source
     --header       <header>  Add <header> to requests (multiple ok)
+    --insecure  -i           Use unencrypted HTTP instead of SSL
     --timeout   -t <seconds> Set timeout to <seconds> (per session)
     --verbose   -v           Verbose output
     --help      -h -?        Help message
